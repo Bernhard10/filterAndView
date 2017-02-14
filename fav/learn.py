@@ -2,20 +2,23 @@ from .base import InvalidInput, hist_to_title, adv_getitem
 import numpy as np
 import pandas as pd
 import copy
+import warnings
 
 from sklearn import svm
 
+import logging
+log=logging.getLogger(__name__)
 class LearnMixin():
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.allowed_commands.update({"SVM": self.support_vector_machine, "PREDICT":self.predict})
         self._trained_classifiers = {}
-    def support_vector_machine(self, svm_name, from_, key):
+    def support_vector_machine(self, svm_name, _from, key, _on=None, *selected_keys):
         """
         
         Use `SVM svm_name FROM key`
         """
-        if from_ != "FROM":
+        if _from != "FROM":
             raise InvalidInput("Wrong syntax for SVM. Expected 'FROM', found '{}'".format(as_))
         if key not in self.filtered_data:
             raise InvalidInput("Key '{}' not present".format(key))
@@ -24,6 +27,13 @@ class LearnMixin():
         else:
             clf = svm.SVC()
         X = self.filtered_data.drop(key, axis=1, inplace=False)
+        if _on is not None:
+            if _on != "ON":
+                raise InvalidInput("Expected 'ON', found '{}'".format(as_))
+            try:
+                X = X[list(selected_keys)]
+            except KeyError as e:
+                raise InvalidInput("Invalid key in {}: {}".format(selected_keys, e)) from e
         X = X.select_dtypes(include=[np.number])
         headers = X.columns.values
         print(headers)
@@ -63,15 +73,16 @@ class LearnMixin():
             #Change the base dataset to add the column. Then recalculate all stored "views" based on their stored history.
 
             data = self.data[self.filtered_data._fav_datasetname]
-            if column_name in data:
+            if column_name in data.columns.values:
                 warnings.warn("Overwriting column {}".format(column_name))
             else:
                 data[column_name] = np.nan
+                log.info("Column {} created for dataset {}".format(column_name, self.filtered_data._fav_datasetname))
             for i,row in enumerate(self.filtered_data.index):
+                assert (data[headers].ix[row]==np.asarray(X)[i]).all(), "{}:\n{}, {}".format(data[headers].ix[row], np.array(X)[i], X.ix[row])
                 data.loc[row,column_name]=y[i]
-                assert (data[headers].ix[row]==np.asarray(X)[i]).all(), "{}:\n{}\n{} \n {}".format(row, r, np.array(X)[i], X)
             for key, stored_dataset in self.stored.items():
                 if stored_dataset._fav_datasetname != data._fav_datasetname:
                     continue
                 self.stored[key] = self.replay_history(data, stored_dataset._fav_history)
-            
+            self.filtered_data = self.replay_history(data, self.filtered_data._fav_history)

@@ -11,32 +11,73 @@ import warnings
 import os
 import re
 import logging
+import itertools
+import ast
+import operator as op
 log = logging.getLogger(__name__)
 
-
-def adv_getitem(data, key):
-    hits = re.findall("[/*+-]", key)
-    if len(hits)==0:
-        return data[key]
-    elif len(hits)==1:
-        key1, op, key2 = re.split("([/*+-])", key)
-        try:
-            rs=int(key2)
-        except:
-            rs=data[key2]
-        if op=="*":
-            return data[key1]*rs
-        elif op=="/":
-            #log.info("divide {} by {}".format(data[key1],rs))
-            return data[key1]/rs
-        elif op=="+":
-            return data[key1]+rs
-        elif op=="-":
-            return data[key1]-rs
+ast_operators = {ast.Add: op.add, ast.Sub: op.sub, ast.Mult: op.mul,
+             ast.Div: op.truediv, ast.FloorDiv: op.floordiv, ast.Pow: op.pow, ast.BitXor: op.xor,
+             ast.USub: op.neg, ast.Mod: op.mod}
+ast_functions = { "log": np.log, "ln": np.log, "log10": np.log10, "log2": np.log2, "sqrt": np.sqrt }
+def _adv_getitem_rec(data, node):
+    if isinstance(node, ast.Num):
+        return node.n
+    elif isinstance(node, ast.BinOp):
+        return ast_operators[type(node.op)](_adv_getitem_rec(data, node.left), _adv_getitem_rec(data, node.right))
+    elif isinstance(node, ast.UnaryOp):
+        return ast_operators[type(node.op)](_adv_getitem_rec(data, node.operand))
+    elif isinstance(node, ast.Call):
+        f = ast_functions[node.func.id]
+        print(f, type(f))
+        args = [ _adv_getitem_rec(data, arg) for arg in node.args ]
+        return f(*args) 
+    elif isinstance(node, ast.Name):
+        return data[node.id]
     else:
-        raise InvalidInput("At most one operator such as '*', '+', '-', '/' is allowed")
-        
-
+        raise InvalidInput("Nodes of type {} not allowed in key".format(type(node)))
+    
+def adv_getitem(data, key):
+    try:
+        tree = ast.parse(key, mode="eval").body
+        return _adv_getitem_rec(data, tree)
+    except InvalidInput:
+        raise
+    except Exception as e:
+        raise InvalidInput("The key '{}' was not understood".format(key)) from e
+    
+    """
+    pattern = "[/*+%-]"
+    hits = re.findall(pattern, key)
+    try:
+        if len(hits)==0:
+            return data[key]
+        elif len(hits)==1:
+            try:
+                key1, op, key2 = re.split("({})".format(pattern), key)
+            except ValueError as e:
+                log.error("Splitting {}:".format(key), re.split(pattern, key))
+                raise  
+            try:
+                rs=int(key2)
+            except:
+                rs=data[key2]
+            if op=="*":
+                return data[key1]*rs
+            elif op=="%":
+                return data[key1]%rs
+            elif op=="/":
+                #log.info("divide {} by {}".format(data[key1],rs))
+                return data[key1]/rs
+            elif op=="+":
+                return data[key1]+rs
+            elif op=="-":
+                return data[key1]-rs
+        else:
+            raise InvalidInput("At most one operator such as '*', '+', '-', '/' is allowed")
+    except KeyError as e:
+        raise InvalidInput("No column named '{}' for key '{}'".format(e, key))
+    """
 def datafilter(f):
     """
     Datafilters select a subsection of a pandas dataframe and store the selection criterion.
@@ -126,7 +167,7 @@ OPS = {
     
 def apply_filter(data, key, operator, value):
 
-    d_type = data[key].dtype
+    d_type = adv_getitem(data,key).dtype
     try:
         if (d_type == np.bool_ and value in ["0", "False", "false"] ):
             value = False
@@ -228,7 +269,7 @@ class DataAnalysis(object):
                 else:
                     raise
 
-        elif parts[0] in self.filtered_data.columns.values:
+        else:
             try:
                 self.apply_filter(*parts)
             except TypeError as e:
@@ -237,13 +278,13 @@ class DataAnalysis(object):
                                "key, operator, value.") from e
                 else:
                     raise
-        else:
-            raise UnknownCommand(parts[0])
+            except KeyError:
+                raise UnknownCommand(parts[0])
 
     def apply_filter(self, key, operator, value):
         self.filtered_data = apply_filter(self.filtered_data, key, operator, value)
 
-    def _get_range(self, key, from_, to, step=None):
+    def _get_range(self, key, from_, to_, step=None):
         use_intervals = False
         if "." in from_ or "." in to_ or (step and "." in step):
             use_intervals = True
@@ -258,7 +299,7 @@ class DataAnalysis(object):
             else:
                 step=abs(float(step))
             target_range = []
-            for i in it.count():
+            for i in itertools.count():
                 target_range.append((step*i, step*(i+1)))
                 if step*(i+1)>max(to_, from_):
                     break
@@ -272,11 +313,15 @@ class DataAnalysis(object):
         return target_range
 
     def _filter_from_r(self, key, r):
-        """param r: an integer (for '==') or a tuple (start, stop)"""
+        """
+        Further filter the filtered data by the given range object.
+        
+        param r: an integer (for '==') or a tuple (start, stop)
+        """
         if isinstance(r, int):
-            data = self.ops["=="](self.filtered_data, key, r)
+            data = OPS["=="](self.filtered_data, key, r)
         else:
-            data = self.ops["<"](self.ops[">="](self.filtered_data, key, r[0]), key, r[1])
+            data = OPS["<"](OPS[">="](self.filtered_data, key, r[0]), key, r[1])
         return data
 
     def show_help(self, arg=None):
@@ -510,10 +555,10 @@ class DataAnalysis(object):
             hist_entry = hist_entry.split()
             if len(hist_entry) == 3:
                 if hist_entry[1] in OPS:
-                    print("Replaying {}".format(hist_entry))
+                    log.info("Replaying {}".format(hist_entry))
                     new_dataset = apply_filter(new_dataset, *hist_entry)
                 elif hist_entry[1]=="merged_with":
-                    new_dataset._fav_history.append(hist_entry)
+                    new_dataset._fav_history+=hist_entry
             else:
                 raise RuntimeError("During replaying history: Entry {} could not be replayed.".format(hist_entry))
         return new_dataset

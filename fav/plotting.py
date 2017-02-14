@@ -4,6 +4,17 @@ from .base import InvalidInput, hist_to_title, adv_getitem
 import numpy as np
 import pandas as pd
 
+from matplotlib.pyplot import cm 
+
+def get_n_different_colors(n):
+    return cm.rainbow(np.linspace(0,1,n))
+
+def symbol_gen():
+    while True:
+        for s in ["s", "o", "+", "d"]:
+            yield s
+symbol = symbol_gen()
+
 # Register some configuration values
 CONFIG.add_item("plotting.hist_bins", 20, int, 
                 "How many bins should be used for histograms? (None to disable histograms)",
@@ -17,24 +28,57 @@ CONFIG.add_item("plotting.kde_kernel", "epanechnikov", str,
 CONFIG.add_item("plotting.kde_bandwidth", 1., float, 
                 "The bandwidth used for the kdes. None for auto-detection via cross-validation.",
                 none_allowed = True)
-CONFIG.add_item("plotting.ylim", None, int, 
-                "The maximal y value for histograms. None for auto.",
-                none_allowed = True)
 CONFIG.add_item("plotting.kde_linewidth", 2, int, 
                 "The linewidth used for plotting kdes.",
                 none_allowed = False)
 CONFIG.add_item("plotting.kde_color", "red", str, 
                 "The color used for plotting kdes.",
                 none_allowed = False)
-
+CONFIG.add_item("plotting.legend_loc", 0, int, 
+                "The location of the legend (As int from 0 to 9). None hids legend",
+                none_allowed = True)
+CONFIG.add_item("plotting.ylim", None, int, 
+                "The maximal y value for plots. None for auto.",
+                none_allowed = True)
+CONFIG.add_item("plotting.xlim", None, int, 
+                "The maximal x value for plots. None for auto.",
+                none_allowed = True)
 class PlotMixin():
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.allowed_commands.update({"HIST":self.plotting_histogram, "SCATTER": self.plotting_scatter})
     
-    def plotting_scatter(self, name_x, name_y, *args):
-        show_scatter(self.filtered_data, name_x, name_y, args)
-        
+    def plotting_scatter(self, name_x, name_y, _for = None, *for_filters):
+        fig, mainAx = plt.subplots()
+        if _for is not None:
+            if _for !="FOR":
+                raise InvalidInput("Expecting 'FOR' found '{}'".format(for_filters[0]))
+            if for_filters[0]=="SAVED":
+                colors = get_n_different_colors(len(for_filters)-1)
+                for dataname, c in zip(for_filters[1:], colors):
+                    data = self.stored[dataname]
+                    mainAx.scatter(adv_getitem(data, name_x), adv_getitem(data, name_y), label=dataname, color = c, marker=next(symbol))
+            else:
+                range_ = self._get_range(*for_filters)
+                colors = get_n_different_colors(len(range_))
+                for r,c in zip(range_, colors):
+                    data = self._filter_from_r(for_filters[0], r)
+                    mainAx.scatter(adv_getitem(data, name_x), adv_getitem(data, name_y), color = c, marker=next(symbol), label=hist_to_title(data._fav_history[-2:]))
+            if self.settings["plotting.legend_loc"] is not None:
+                mainAx.legend(loc=self.settings["plotting.legend_loc"], prop={'size':6})
+        elif len(self.filtered_data):        
+            fig.text(0.2,0.8, "{} datapoints".format(len(self.filtered_data)) )
+            mainAx.scatter(adv_getitem(self.filtered_data, name_x), adv_getitem(self.filtered_data, name_y))
+        if self.settings["plotting.xlim"] is not None:
+            mainAx.set_xlim(right = self.settings["plotting.xlim"])
+        if self.settings["plotting.ylim"] is not None:
+            mainAx.set_ylim(top = self.settings["plotting.ylim"])
+
+        mainAx.set_xlabel(name_x)
+        mainAx.set_ylabel(name_y)
+
+        plt.show(block=False)
+    
     def plotting_histogram(self, *args):
         """
         Show a histogram and kernel density estimate of a column of the dataset.
@@ -133,14 +177,3 @@ def show_hist(data, xlabel, histtext, settings):
 
     plt.show(block=False)
 
-
-def show_scatter(data, name_x, name_y, for_filters=[]):
-    fig, mainAx = plt.subplots()
-    fig.text(0.2,0.8, "{} datapoints".format(len(data)) )
-    if len(data):
-        mainAx.scatter(adv_getitem(data, name_x), adv_getitem(data, name_y))
-        mainAx.set_xlabel(name_x)
-        mainAx.set_ylabel(name_y)
-
-    plt.show(block=False)
-    
