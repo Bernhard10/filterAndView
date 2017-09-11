@@ -3,9 +3,9 @@ Interactive analysis of data from the commandline
 
 # Example
 
-Example usage::
+Example usage:
 
-   .. code:: python
+.. code:: python
 
    from fav import base, plotting, units
    class Analysis(units.UnitsMixin, plotting.PlotMixin, base.DataAnalysis): pass
