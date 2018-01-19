@@ -20,9 +20,13 @@ ast_operators = {ast.Add: op.add, ast.Sub: op.sub, ast.Mult: op.mul,
              ast.Div: op.truediv, ast.FloorDiv: op.floordiv, ast.Pow: op.pow, ast.BitXor: op.xor,
              ast.USub: op.neg, ast.Mod: op.mod}
 ast_functions = { "log": np.log, "ln": np.log, "log10": np.log10, "log2": np.log2, "sqrt": np.sqrt }
-def _adv_getitem_rec(data, node):
+
+def _adv_getitem_rec(data, node, allow_string):
     if isinstance(node, ast.Num):
         return node.n
+    elif isinstance(node, ast.Str) and allow_string:
+        log.debug("String node %s", node.s)
+        return node.s
     elif isinstance(node, ast.BinOp):
         return ast_operators[type(node.op)](_adv_getitem_rec(data, node.left), _adv_getitem_rec(data, node.right))
     elif isinstance(node, ast.UnaryOp):
@@ -33,14 +37,26 @@ def _adv_getitem_rec(data, node):
         args = [ _adv_getitem_rec(data, arg) for arg in node.args ]
         return f(*args) 
     elif isinstance(node, ast.Name):
-        return data[node.id]
+        try:
+            return data[node.id]
+        except KeyError as e:
+            if allow_string:
+                warnings.warn("Treating {0} as string literal, since no column with this name exists."
+                              "Consider using '{0}' instead".format(node.id))
+                return node.id
+            else:
+                raise InvalidInput("{} is not a valid column name "
+                                   "(and in the current context, "
+                                   "strings are nt supported). ".format(node.id)) from e
     else:
         raise InvalidInput("Nodes of type {} not allowed in key".format(type(node)))
-    
-def adv_getitem(data, key):
+
+def adv_getitem(data, key, allow_string=False):
     try:
         tree = ast.parse(key, mode="eval").body
-        return _adv_getitem_rec(data, tree)
+        ret = _adv_getitem_rec(data, tree, allow_string)
+        log.info("Advanced_getitem for %s (allow_string = %s) returns %r", key, allow_string, ret)
+        return ret
     except InvalidInput:
         raise
     except Exception as e:
@@ -89,7 +105,20 @@ def datafilter(f):
     """
     @functools.wraps(f)
     def wrapped(data, key, value):
-        newdata = f(data, key, value)
+        d_type = adv_getitem(data,key).dtype
+        log.info("Dtype of %s is %r", key, d_type)
+        try:
+            if (d_type == np.bool_ and value in ["0", "False", "false"] ):
+                value2 = False
+            else:
+                try:
+                    value2 = adv_getitem(data, value, allow_string=(d_type==object))
+                except:
+                    value2 = d_type.type(value)
+        except ValueError as e:
+            raise InvalidInput("Cannot convert value {} to type {} of "
+                               "column {}.".format(value, d_type, key)) from e
+        newdata = f(data, key, value2)
         newdata._fav_history = data._fav_history + ["{} {} {}".format(key, f.__doc__, value)]
         newdata._fav_datasetname = data._fav_datasetname
         return newdata
@@ -100,7 +129,7 @@ def datafilter(f):
 def eq(data, key, value):
     """=="""
     try:
-        if np.isnan(value):
+        if np.isscalar(value) and np.isnan(value):
             return data[np.isnan(adv_getitem(data,key))]
     except TypeError: #Datatype does not support nan (int/ string)
         pass 
@@ -110,7 +139,7 @@ def eq(data, key, value):
 def ne(data, key, value):
     """!="""
     try:
-        if np.isnan(value):
+        if np.isscalar(value) and np.isnan(value):
             return data[np.logical_not(np.isnan(adv_getitem(data,key)))]
     except TypeError: #Datatype does not support nan (int/ string)
         pass
@@ -166,16 +195,6 @@ OPS = {
       }
     
 def apply_filter(data, key, operator, value):
-
-    d_type = adv_getitem(data,key).dtype
-    try:
-        if (d_type == np.bool_ and value in ["0", "False", "false"] ):
-            value = False
-        else:
-            value = d_type.type(value)
-    except ValueError as e:
-        raise InvalidInput("Cannot convert value {} to type {} of "
-                           "column {}.".format(value, d_type, key)) from e
     if operator not in OPS:
         raise InvalidInput("Operator {} not understood. Must be one of "
                            "{}".format(operator, ",".join(map(repr, OPS.keys()))))
