@@ -229,7 +229,7 @@ def show_hist(data, xlabel, histtext, settings, angular):
                 fig.text(0.2,0.8, "{} datapoints".format(len(data)) )
 
             values, bins = bin_f(data, num_bins)
-            bars = mainAx.bar(bins[:-1], values, width=bins[1]-bins[0], linewidth=0.25)
+            bars = mainAx.bar(bins[:-1], values, width=bins[1]-bins[0], linewidth=0.25, align="edge")
             mainAx.set_ylabel("count")
         if max_val:
             mainAx.set_ylim(0,max_val)
