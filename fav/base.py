@@ -1,5 +1,5 @@
 # coding: utf-8
-                      
+
 from .configValues import CONFIG
 import functools
 import numpy as np
@@ -24,11 +24,14 @@ def nunique(data):
 ast_operators = {ast.Add: op.add, ast.Sub: op.sub, ast.Mult: op.mul,
              ast.Div: op.truediv, ast.FloorDiv: op.floordiv, ast.Pow: op.pow, ast.BitXor: op.xor,
              ast.USub: op.neg, ast.Mod: op.mod}
-ast_functions = { "log": np.log, "ln": np.log, "log10": np.log10, "log2": np.log2, "sqrt": np.sqrt, "nunique": nunique }
+ast_functions = { "log": np.log, "ln": np.log, "log10": np.log10, "log2": np.log2, "sqrt": np.sqrt }
 
-def _adv_getitem_rec(data, node):
+def _adv_getitem_rec(data, node, allow_string):
     if isinstance(node, ast.Num):
         return node.n
+    elif isinstance(node, ast.Str) and allow_string:
+        log.debug("String node %s", node.s)
+        return node.s
     elif isinstance(node, ast.BinOp):
         return ast_operators[type(node.op)](_adv_getitem_rec(data, node.left), _adv_getitem_rec(data, node.right))
     elif isinstance(node, ast.UnaryOp):
@@ -36,68 +39,59 @@ def _adv_getitem_rec(data, node):
     elif isinstance(node, ast.Call):
         f = ast_functions[node.func.id]
         args = [ _adv_getitem_rec(data, arg) for arg in node.args ]
-        return f(*args) 
+        return f(*args)
     elif isinstance(node, ast.Name):
-        assert node.id in data.columns.values
-        return data[node.id]
-
+        try:
+            return data[node.id]
+        except KeyError as e:
+            if allow_string:
+                warnings.warn("Treating {0} as string literal, since no column with this name exists."
+                              "Consider using '{0}' instead".format(node.id))
+                return node.id
+            else:
+                raise InvalidInput("{} is not a valid column name "
+                                   "(and in the current context, "
+                                   "strings are nt supported). ".format(node.id)) from e
     else:
         raise InvalidInput("Nodes of type {} not allowed in key".format(type(node)))
-    
-def adv_getitem(data, key):
 
+def adv_getitem(data, key, allow_string=False):
     try:
         tree = ast.parse(key, mode="eval").body
-        return _adv_getitem_rec(data, tree)
+        ret = _adv_getitem_rec(data, tree, allow_string)
+        log.info("Advanced_getitem for %s (allow_string = %s) returns %r", key, allow_string, ret)
+        return ret
     except InvalidInput:
         raise
     except Exception as e:
         raise InvalidInput("The key '{}' was not understood".format(key)) from e
-    
-    """
-    pattern = "[/*+%-]"
-    hits = re.findall(pattern, key)
-    try:
-        if len(hits)==0:
-            return data[key]
-        elif len(hits)==1:
-            try:
-                key1, op, key2 = re.split("({})".format(pattern), key)
-            except ValueError as e:
-                log.error("Splitting {}:".format(key), re.split(pattern, key))
-                raise  
-            try:
-                rs=int(key2)
-            except:
-                rs=data[key2]
-            if op=="*":
-                return data[key1]*rs
-            elif op=="%":
-                return data[key1]%rs
-            elif op=="/":
-                #log.info("divide {} by {}".format(data[key1],rs))
-                return data[key1]/rs
-            elif op=="+":
-                return data[key1]+rs
-            elif op=="-":
-                return data[key1]-rs
-        else:
-            raise InvalidInput("At most one operator such as '*', '+', '-', '/' is allowed")
-    except KeyError as e:
-        raise InvalidInput("No column named '{}' for key '{}'".format(e, key))
-    """
+
+
 def datafilter(f):
     """
     Datafilters select a subsection of a pandas dataframe and store the selection criterion.
-    
+
     Whether the subsection is a copy or a view of the original data is not specified.
-    
-    The selection criterion is stored in the dataframe's `_fav_history` attribute 
+
+    The selection criterion is stored in the dataframe's `_fav_history` attribute
     (which was assigned by fav and is not from pandas)
     """
     @functools.wraps(f)
     def wrapped(data, key, value):
-        newdata = f(data, key, value)
+        d_type = adv_getitem(data,key).dtype
+        log.info("Dtype of %s is %r", key, d_type)
+        try:
+            if (d_type == np.bool_ and value in ["0", "False", "false"] ):
+                value2 = False
+            else:
+                try:
+                    value2 = adv_getitem(data, value, allow_string=(d_type==object))
+                except:
+                    value2 = d_type.type(value)
+        except ValueError as e:
+            raise InvalidInput("Cannot convert value {} to type {} of "
+                               "column {}.".format(value, d_type, key)) from e
+        newdata = f(data, key, value2)
         newdata._fav_history = data._fav_history + ["{} {} {}".format(key, f.__doc__, value)]
         newdata._fav_datasetname = data._fav_datasetname
         return newdata
@@ -108,17 +102,17 @@ def datafilter(f):
 def eq(data, key, value):
     """=="""
     try:
-        if np.isnan(value):
+        if np.isscalar(value) and np.isnan(value):
             return data[np.isnan(adv_getitem(data,key))]
     except TypeError: #Datatype does not support nan (int/ string)
-        pass 
+        pass
     return data[adv_getitem(data,key)==value]
 
 @datafilter
 def ne(data, key, value):
     """!="""
     try:
-        if np.isnan(value):
+        if np.isscalar(value) and np.isnan(value):
             return data[np.logical_not(np.isnan(adv_getitem(data,key)))]
     except TypeError as e: #Datatype does not support nan (int/ string)
         warnings.warn("Nan not supported for column. Using !=. {}".format(e))
@@ -166,7 +160,7 @@ def hist_to_title(history):
         title = "<"+";".join(history)+">"
     else:
         title = "<no filters>"
-    return title  
+    return title
 
 OPS = {
       "==": eq,
@@ -180,18 +174,8 @@ OPS = {
       "doesnot_contain": notin,
       "unique": unique
       }
-    
-def apply_filter(data, key, operator, value):
 
-    d_type = adv_getitem(data,key).dtype
-    try:
-        if (d_type == np.bool_ and value in ["0", "False", "false"] ):
-            value = False
-        else:
-            value = d_type.type(value)
-    except ValueError as e:
-        raise InvalidInput("Cannot convert value {} to type {} of "
-                           "column {}.".format(value, d_type, key)) from e
+def apply_filter(data, key, operator, value):
     if operator not in OPS:
         raise InvalidInput("Operator {} not understood. Must be one of "
                            "{}".format(operator, ",".join(map(repr, OPS.keys()))))
@@ -207,7 +191,7 @@ def subdataset_from_history(data, history):
 FAIL = '\033[91m'
 ENDC = '\033[0m'
 OUTPUT = '\033[92m' #expected output of commands
-OKBLUE = '\033[94m' 
+OKBLUE = '\033[94m'
 BOLD = '\033[1m'
 
 
@@ -254,15 +238,15 @@ class DataAnalysis(object):
             ("IMPORT_DATASET", self.import_dataset),
             ("SELECT_DATASET", self.select_dataset),
             ("WRITE_DATASET", self.write_dataset),
-            ("JOIN", self.join_datasets)
+            ("JOIN", self.join_datasets),
         ])
         #Keep our local instance of configuration variables.
         self.settings = copy.copy(CONFIG)
-    
+
     @property
     def current_title(self):
         return hist_to_title(self.filtered_data._fav_history)
-    
+
     def p(self, command):
         """Shortcut for use in jupyter,..."""
         return self.perform(command)
@@ -343,7 +327,7 @@ class DataAnalysis(object):
     def _filter_from_r(self, key, r):
         """
         Further filter the filtered data by the given range object.
-        
+
         param r: an integer (for '==') or a tuple (start, stop)
         """
         if isinstance(r, tuple):
@@ -355,7 +339,7 @@ class DataAnalysis(object):
     def show_help(self, arg=None):
         """
         Show this help message
-        
+
         Use `HELP [ USAGE | KEYS | OPERATORS | COMMANDS ]`
         """
         if arg is None or arg=="USAGE":
@@ -365,7 +349,7 @@ class DataAnalysis(object):
         if arg is None or arg == "KEYS":
             print("***  Valid keys depend on the loaded dataset. Currently they are:\n")
             for header in self.filtered_data.columns.values:
-                print(   "          {}".format(header))        
+                print(   "          {}".format(header))
         if arg is None or arg == "OPERATORS":
             print(       "***  Valid operators are:")
             for op in OPS.keys():
@@ -397,24 +381,24 @@ class DataAnalysis(object):
             self.settings[name] = val
         except Exception as e:
             raise InvalidInput from e
-        
+
     def save(self, *args):
         """
         Save current dataset under the given name.
 
         Use 'SAVE NAME' to save the current dataset under the name NAME.
         Use 'SAVE NAME for KEY FROM TO [STEP]' to save subsets of the current dataset according
-            to the range specified with FROM and TO. 
-            They will have '_NUMBER' appended to their name.        
+            to the range specified with FROM and TO.
+            They will have '_NUMBER' appended to their name.
         """
         if len(args)>1 and args[1]=="for":
             range_ = self._get_range(*args[2:])
             for r in range_:
                 data = self._filter_from_r(args[2], r)
                 if isinstance(r, int):
-                    name = "{}_{}".format(args[0], r) 
+                    name = "{}_{}".format(args[0], r)
                 else:
-                    name = "{}_[{},{})".format(args[0], r[0], r[1]) 
+                    name = "{}_[{},{})".format(args[0], r[0], r[1])
                 print("SAVING {}".format(name))
                 self.stored[name]=data
         elif len(args)==0:
@@ -426,24 +410,24 @@ class DataAnalysis(object):
             if args[0]=="for":
                 raise InvalidInput("Name 'for' is not allowed as a name for saving data, because it is a keyword")
             self.stored[args[0]]=self.filtered_data
-            
+
     def load(self, name):
-        """ 
+        """
         Load a previousely saved dataset.
         """
         self.filtered_data = self.stored[name]
-        
+
     def del_saved(self, *args):
         """
         Delete a dataset that was previousely saved under this name(s)
 
-        Use 'DEL NAME1 [NAME2...] to delete saves NAME1,... 
+        Use 'DEL NAME1 [NAME2...] to delete saves NAME1,...
         """
         if len(args)==0:
             raise InvalidInput("Need at least one name of a save which should be deleted.")
         for name in args:
             del self.stored[name]
-            
+
     def show_saved(self):
         """
         Show all saved datasets
@@ -454,7 +438,7 @@ class DataAnalysis(object):
                 print ( k, "\t", title, "\t", "Dataset: {}".format(v._fav_datasetname))
         else:
             print("-- nothing saved --")
-                
+
     def print_data(self, column_name=None, verbose = False):
         """
         Print some values and a summary for a column of data.
@@ -462,21 +446,21 @@ class DataAnalysis(object):
         Use 'PRINT key' to print information about the column with name key
         Use 'PRINT key TRUE' to print verbose information about the column with name key
 
-        """            
+        """
         if verbose:
             print (self.filtered_data[column_name])
         print(self.filtered_data[column_name].describe())
-    
+
     def import_dataset(self, path, name):
         """
         Import another dataset into the application.
-        
+
         Use 'IMPORT_DATASET path/to/csv/file/csv name' to import the file and assign the name 'name' to it.
-        """        
+        """
         if name in self.data:
             raise InvalidInput("Name {} exists already. Please choose another name.")
         saved_dict = {}
-        
+
         with open(os.path.expanduser(path)) as f:
             for line in f:
                 if line[:2]!="#_":
@@ -487,7 +471,7 @@ class DataAnalysis(object):
                     self.column_metadata[name]=json.loads(line.partition(" ")[2])
         data = pd.read_csv(os.path.expanduser(path), comment="#")
         data._fav_history = []
-        data._fav_datasetname = name
+        data._fav_datasetname = self.filtered_data._fav_datasetname
         self.data[name] = data
         log.info("The file contains the following stored entries: {}".format(saved_dict))
         for savename, hist in saved_dict.items():
@@ -497,13 +481,14 @@ class DataAnalysis(object):
             else:
                 self.stored[savename] = subdataset_from_history(data, hist)
         print ("Dataset has been imported. Use SELECT_DATASET {} to select it.".format(name))
-    
+
     def select_dataset(self, name):
         """
         Switch to another dataset.
-        
-        Use `SELECT_DATASET name` to switch to the dataset `name`
+
+        Use SELECT_DATASET name to switch to the dataset name.
         """
+
         self.filtered_data = self.data[name]
         print("Dataset {} has been selected".format(name))
 
@@ -518,22 +503,21 @@ class DataAnalysis(object):
         with open(os.path.expanduser(path), "w") as f:
             print("#_fav_saved " + json.dumps(histories), file=f)
             print("#_fav_colmeta " + json.dumps(self.column_metadata[name]), file=f)
-        
+
         self.data[name].to_csv(path, mode="a")
-    
+
     def join_datasets(self, name1, name2, _on, key1, *args ):
         """
         Join two datasets on the columns specified by key to producte a new dataset.
-        
+
         Use `JOIN name1 name2 ON key1 = key2 AS target_name` or
             `JOIN name1 name2 ON key1 == key2 AS target_name`
-            to join dataset `name1` with dataset `name2` using `key1` of dataset `name1` 
+            to join dataset `name1` with dataset `name2` using `key1` of dataset `name1`
             and `key2` of dataset `name2` and save it as dataset `target_name`
         Use `JOIN name1, name2 ON key1 AS target_name` if both datasets have the same key.
-        
         Performs an outer join. See `http://pandas.pydata.org/pandas-docs/stable/merging.html`
         for documentation.
-        
+
         WARNING: If a many-to-one or many-to-many relationship exists, rows will be duplicated,
                  which can influence statistics calculated on the resultng dataframe.
         """
