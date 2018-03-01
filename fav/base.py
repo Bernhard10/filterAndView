@@ -16,10 +16,16 @@ import ast
 import operator as op
 log = logging.getLogger(__name__)
 
+def nunique(data):
+    uni = np.unique(data)
+    l = len(uni)
+    return l
+    
 ast_operators = {ast.Add: op.add, ast.Sub: op.sub, ast.Mult: op.mul,
              ast.Div: op.truediv, ast.FloorDiv: op.floordiv, ast.Pow: op.pow, ast.BitXor: op.xor,
              ast.USub: op.neg, ast.Mod: op.mod}
-ast_functions = { "log": np.log, "ln": np.log, "log10": np.log10, "log2": np.log2, "sqrt": np.sqrt }
+ast_functions = { "log": np.log, "ln": np.log, "log10": np.log10, "log2": np.log2, "sqrt": np.sqrt, "nunique": nunique }
+
 def _adv_getitem_rec(data, node):
     if isinstance(node, ast.Num):
         return node.n
@@ -29,15 +35,17 @@ def _adv_getitem_rec(data, node):
         return ast_operators[type(node.op)](_adv_getitem_rec(data, node.operand))
     elif isinstance(node, ast.Call):
         f = ast_functions[node.func.id]
-        print(f, type(f))
         args = [ _adv_getitem_rec(data, arg) for arg in node.args ]
         return f(*args) 
     elif isinstance(node, ast.Name):
+        assert node.id in data.columns.values
         return data[node.id]
+
     else:
         raise InvalidInput("Nodes of type {} not allowed in key".format(type(node)))
     
 def adv_getitem(data, key):
+
     try:
         tree = ast.parse(key, mode="eval").body
         return _adv_getitem_rec(data, tree)
@@ -112,7 +120,8 @@ def ne(data, key, value):
     try:
         if np.isnan(value):
             return data[np.logical_not(np.isnan(adv_getitem(data,key)))]
-    except TypeError: #Datatype does not support nan (int/ string)
+    except TypeError as e: #Datatype does not support nan (int/ string)
+        warnings.warn("Nan not supported for column. Using !=. {}".format(e))
         pass
     return data[adv_getitem(data,key)!=value]
 
@@ -146,6 +155,12 @@ def notin(data, key, value):
     """doesnot_contain"""
     return data[np.invert(adv_getitem(data,key).str.contains(value))]
 
+@datafilter
+def unique(data, key, value):
+    """unique"""
+    assert value is None
+    return data.drop_duplicates(subset=key)
+    
 def hist_to_title(history):
     if history:
         title = "<"+";".join(history)+">"
@@ -162,7 +177,8 @@ OPS = {
       ">=": ge,
       "!=": ne,
       "contains": in_, 
-      "doesnot_contain": notin
+      "doesnot_contain": notin,
+      "unique": unique
       }
     
 def apply_filter(data, key, operator, value):
@@ -224,7 +240,7 @@ class DataAnalysis(object):
         self.column_metadata[dataset_name] = column_metadata
         self.filtered_data = data
         self.stored = {}
-        
+        self.unary_ops = ["unique"]
 
         self.allowed_commands = OrderedDict([
             ("HELP", self.show_help),
@@ -268,7 +284,8 @@ class DataAnalysis(object):
                     raise InvalidInput("Wrong number of arguments.") from e
                 else:
                     raise
-
+        elif len(parts)>1 and parts[1] in self.unary_ops:
+            self.apply_unary(*parts)
         else:
             try:
                 self.apply_filter(*parts)
@@ -280,36 +297,47 @@ class DataAnalysis(object):
                     raise
             except KeyError:
                 raise UnknownCommand(parts[0])
-
+    
+    def apply_unary(self, key, operator):
+        self.filtered_data = apply_filter(self.filtered_data, key, operator, None)
+        
     def apply_filter(self, key, operator, value):
         self.filtered_data = apply_filter(self.filtered_data, key, operator, value)
 
-    def _get_range(self, key, from_, to_, step=None):
-        use_intervals = False
-        if "." in from_ or "." in to_ or (step and "." in step):
-            use_intervals = True
-        if self.filtered_data[key].dtype == np.float_:
-            use_intervals = True
-        if use_intervals:
-            from_, to_ = sorted([float(to_),float(from_)])
-            if not step:
-                step =(from_-to_)/10
-                if step<0:
-                    step*=-1
-            else:
-                step=abs(float(step))
-            target_range = []
-            for i in itertools.count():
-                target_range.append((step*i, step*(i+1)))
-                if step*(i+1)>max(to_, from_):
-                    break
+    def _get_range(self, key, from_=None, to_=None, step=None):
+        log.warning(self.filtered_data[key].dtype)
+        if self.filtered_data[key].dtype == object: #String
+            target_range = list(sorted(self.filtered_data[key].unique()))
         else:
-            from_, to_ = sorted([int(to_),int(from_)])
-            if step:
-                step = abs(int(step))
-                target_range=list(range(int(from_), int(to_), int(step)))
+            use_intervals = False
+            if self.filtered_data[key].dtype == np.float_:
+                use_intervals = True
+            if from_ is None:
+                from_ = np.min(self.filtered_data[key])
+            if to_ is None:
+                to_ = np.max(self.filtered_data[key])
+            if "." in from_ or "." in to_ or (step and "." in step):
+                use_intervals = True
+            if use_intervals:
+                from_, to_ = sorted([float(to_),float(from_)])
+                if not step:
+                    step =(from_-to_)/10
+                    if step<0:
+                        step*=-1
+                else:
+                    step=abs(float(step))
+                target_range = []
+                for i in itertools.count():
+                    target_range.append((step*i, step*(i+1)))
+                    if step*(i+1)>max(to_, from_):
+                        break
             else:
-                target_range=list(range(int(from_), int(to_)))
+                from_, to_ = sorted([int(to_),int(from_)])
+                if step:
+                    step = abs(int(step))
+                    target_range=list(range(int(from_), int(to_), int(step)))
+                else:
+                    target_range=list(range(int(from_), int(to_)))
         return target_range
 
     def _filter_from_r(self, key, r):
@@ -318,10 +346,10 @@ class DataAnalysis(object):
         
         param r: an integer (for '==') or a tuple (start, stop)
         """
-        if isinstance(r, int):
-            data = OPS["=="](self.filtered_data, key, r)
-        else:
+        if isinstance(r, tuple):
             data = OPS["<"](OPS[">="](self.filtered_data, key, r[0]), key, r[1])
+        else:
+            data = OPS["=="](self.filtered_data, key, r)
         return data
 
     def show_help(self, arg=None):
@@ -501,7 +529,7 @@ class DataAnalysis(object):
             `JOIN name1 name2 ON key1 == key2 AS target_name`
             to join dataset `name1` with dataset `name2` using `key1` of dataset `name1` 
             and `key2` of dataset `name2` and save it as dataset `target_name`
-        Use `JOIN name1, name2 ON key1 AS target_name` if tboth datasets have the same key.
+        Use `JOIN name1, name2 ON key1 AS target_name` if both datasets have the same key.
         
         Performs an outer join. See `http://pandas.pydata.org/pandas-docs/stable/merging.html`
         for documentation.
@@ -546,7 +574,7 @@ class DataAnalysis(object):
 
         print("Dataset {} has been created".format(target_name))
         print("Use `SELECT_DATASET {}` to select it.".format(target_name))
-    
+
     def replay_history(self, dataset, history):
         new_dataset = dataset.copy()
         new_dataset._fav_history=[]

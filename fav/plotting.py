@@ -3,8 +3,11 @@ from .configValues import CONFIG
 from .base import InvalidInput, hist_to_title, adv_getitem
 import numpy as np
 import pandas as pd
+import warnings
+import math
 
 from matplotlib.pyplot import cm 
+from sklearn.grid_search import GridSearchCV
 
 def get_n_different_colors(n):
     return cm.rainbow(np.linspace(0,1,n))
@@ -16,6 +19,9 @@ def symbol_gen():
 symbol = symbol_gen()
 
 # Register some configuration values
+CONFIG.add_item("plotting.circular_hist", False, bool, 
+                "Create circular histograms",
+                none_allowed = False)
 CONFIG.add_item("plotting.hist_bins", 20, int, 
                 "How many bins should be used for histograms? (None to disable histograms)",
                 none_allowed = True)
@@ -43,12 +49,66 @@ CONFIG.add_item("plotting.ylim", None, int,
 CONFIG.add_item("plotting.xlim", None, int, 
                 "The maximal x value for plots. None for auto.",
                 none_allowed = True)
+
+def polar_twin(ax):
+    #http://stackoverflow.com/a/19620861/5069869
+    ax2 = ax.figure.add_axes(ax.get_position(), projection='polar', 
+                             label='twin', frameon=False,
+                             theta_direction=ax.get_theta_direction(),
+                             theta_offset=ax.get_theta_offset())
+    ax2.xaxis.set_visible(False)
+    # There should be a method for this, but there isn't... Pull request?
+    ax2._r_label_position._t = (22.5 + 180, 0.0)
+    ax2._r_label_position.invalidate()
+    # Ensure that original axes tick labels are on top of plots in twinned axes
+    for label in ax.get_yticklabels():
+        ax.figure.texts.append(label)
+    plt.setp(ax2.get_yticklabels(), color='red')
+    ax2.get_xaxis().set_ticks([])
+    ax2.get_yaxis().set_ticks([])
+
+    return ax2
+    
+    
 class PlotMixin():
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.allowed_commands.update({"HIST":self.plotting_histogram, "SCATTER": self.plotting_scatter})
+        self.allowed_commands.update({"HIST":self.plotting_histogram, 
+                                      "SCATTER": self.plotting_scatter,
+                                      "PLOT": self.plotting_plot})
     
+    def plotting_plot(self, name_y, for_, *for_filters):
+        """
+        Plot f(x) against x.
+        
+        Use `PLOT columnname1 FOR columnname [from [to [step]]]`
+        Use `PLOT columnname1 FOR columnname [from [to [step]]] AND`
+        """
+        if for_filters[-1]=="AND":
+            dontshow=True
+            for_filters=for_filters[:-1]
+        else:
+            dontshow=False
+        range_ = self._get_range(*for_filters)
+        data = []
+        for r in  range_:
+            data.append(np.array(adv_getitem(self._filter_from_r(for_filters[0], r), name_y)))
+        if isinstance(range_[0], str):
+            x = list(range(len(range_)))
+            plt.xticks(x, range_)
+        else:
+            x = range_
+        plt.plot(x, data, label=name_y)
+        plt.legend()
+        if not dontshow:
+            plt.show(block=False)
+        
     def plotting_scatter(self, name_x, name_y, _for = None, *for_filters):
+        """
+        Create a scatterplot
+        
+        Use 'SCATTER columname1 columname2' to plot a scatterplot
+        """
         fig, mainAx = plt.subplots()
         if _for is not None:
             if _for !="FOR":
@@ -95,28 +155,28 @@ class PlotMixin():
         if len(args) == 1:
             show_hist(adv_getitem(self.filtered_data,columnname), columnname, self.filtered_data._fav_datasetname +" "+hist_to_title(self.filtered_data._fav_history), self.settings)
         elif args[1] == "FOR":
-            if len(args)>2 and args[3]=="SAVED":
-                for dataname in args[4:]:
+            if len(args)>2 and args[2]=="SAVED":
+                for dataname in args[3:]:
                     if dataname not in self.stored:
                         raise InvalidInput("The command 'HIST columnname FOR SAVED' expect a list of saved "
                                            "datasets, but nothing was saved under the name "
                                            "'{}'.".format(dataname))
-                    show_hist(adv_getitem(self.stored[dataname],columnname), columnname, self.stored[dataname]._fav_datasetname +" "+hist_to_title(self.stored[dataname].history), 
+                    show_hist(adv_getitem(self.stored[dataname],columnname), columnname, self.stored[dataname]._fav_datasetname +" "+hist_to_title(self.stored[dataname]._fav_history), 
                               self.settings)
-            elif len(args)>2 and args[3] in self.filtered_data.columns.values:
-                range_ = self._get_range(*args[3:])
+            elif len(args)>2 and args[2] in self.filtered_data.columns.values:
+                range_ = self._get_range(*args[2:])
                 for r in range_:
-                    data = self._filter_from_r(args[3], r)
+                    data = self._filter_from_r(args[2], r)
                     show_hist(adv_getitem(data,columnname), columnname, data._fav_datasetname +" " + hist_to_title(data._fav_history), 
                                     self.settings)
             else:
                 raise InvalidInput("The command 'HIST columnname FOR' expect either the keyword "
                                    "'SAVED' or a vaild key that identifies one column of the data,"
-                                   " not {}".format(args[3]))
+                                   " not {}".format(args[2]))
         else:
             raise InvalidInput("The third argument to 'HIST columnname' should be 'FOR' or nothing."
                                "Found {}".format(repr(args[2:])))
-        
+    
 def bin_data(data, num_bins):
     min_ = min(data)
     max_ = max(data)
@@ -137,7 +197,7 @@ def plot_kde(data, ax, settings):
                             bandwidth=bw).fit(data.reshape(-1, 1))
 
     else:
-        grid = GridSearchCV(KernelDensity(kernel=settings["plotting.kde_bandwidth"]),
+        grid = GridSearchCV(KernelDensity(kernel=settings["plotting.kde_kernel"]),
                   {'bandwidth': np.linspace(math.radians(2), math.radians(30), 40)},
                 cv=min(10, len(data))) # 10-fold cross-validation
         try:
@@ -153,7 +213,12 @@ def plot_kde(data, ax, settings):
 def show_hist(data, xlabel, histtext, settings):
     num_bins = settings["plotting.hist_bins"]
     max_val = settings["plotting.ylim"]
-    fig, mainAx = plt.subplots()
+    if settings["plotting.circular_hist"]:
+        fig, mainAx = plt.subplots(subplot_kw=dict(projection='polar'))
+        mainAx.set_theta_direction(-1)
+        mainAx.set_theta_zero_location("W")    
+    else:
+        fig, mainAx = plt.subplots()
     fig.suptitle(histtext)
     mainAx.set_xlabel(xlabel)
     
@@ -171,9 +236,13 @@ def show_hist(data, xlabel, histtext, settings):
             bar.set_facecolor(plt.cm.jet(r / maxc))
 
         if settings["plotting.kde_kernel"] is not None:
-            kde_ax = mainAx.twinx()
+            if settings["plotting.circular_hist"]:
+                kde_ax = polar_twin(mainAx)        
+            else:
+                kde_ax = mainAx.twinx()            
+                kde_ax.set_ylabel("density")
             plot_kde(data, kde_ax, settings)
-            kde_ax.set_ylabel("density")
+
 
     plt.show(block=False)
 

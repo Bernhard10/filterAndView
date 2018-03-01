@@ -76,6 +76,7 @@ class LearnMixin():
             if column_name in data.columns.values:
                 warnings.warn("Overwriting column {}".format(column_name))
             else:
+                # Create new column
                 data[column_name] = np.nan
                 log.info("Column {} created for dataset {}".format(column_name, self.filtered_data._fav_datasetname))
             for i,row in enumerate(self.filtered_data.index):
