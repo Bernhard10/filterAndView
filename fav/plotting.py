@@ -8,7 +8,7 @@ import pandas as pd
 import warnings
 import math
 
-from matplotlib.pyplot import cm 
+from matplotlib.pyplot import cm
 from sklearn.grid_search import GridSearchCV
 
 from .configValues import CONFIG
@@ -24,7 +24,7 @@ def symbol_gen():
 symbol = symbol_gen()
 
 # Register some configuration values
-CONFIG.add_item("plotting.hist_bins", 20, int, 
+CONFIG.add_item("plotting.hist_bins", 20, int,
                 "How many bins should be used for histograms? (None to disable histograms)",
                 none_allowed = True)
 CONFIG.add_item("plotting.kde_kernel", "epanechnikov", str,
@@ -51,10 +51,13 @@ CONFIG.add_item("plotting.ylim", None, int,
 CONFIG.add_item("plotting.xlim", None, int,
                 "The maximal x value for plots. None for auto.",
                 none_allowed = True)
+CONFIG.add_item("plotting.figsize", None, int,
+                "The width and height for the figure (will be squared).",
+                none_allowed = True)
 
 def polar_twin(ax):
     #http://stackoverflow.com/a/19620861/5069869
-    ax2 = ax.figure.add_axes(ax.get_position(), projection='polar', 
+    ax2 = ax.figure.add_axes(ax.get_position(), projection='polar',
                              label='twin', frameon=False,
                              theta_direction=ax.get_theta_direction(),
                              theta_offset=ax.get_theta_offset())
@@ -70,19 +73,20 @@ def polar_twin(ax):
     ax2.get_yaxis().set_ticks([])
 
     return ax2
-    
-    
+
+
 class PlotMixin():
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.allowed_commands.update({"HIST":self.plotting_histogram, 
+        self.allowed_commands.update({"HIST":self.plotting_histogram,
                                       "SCATTER": self.plotting_scatter,
-                                      "PLOT": self.plotting_plot})
-    
+                                      "PLOT": self.plotting_plot,
+                                      "ANGHIST": self.plotting_angular_histogram})
+
     def plotting_plot(self, name_y, for_, *for_filters):
         """
         Plot f(x) against x.
-        
+
         Use `PLOT columnname1 FOR columnname [from [to [step]]]`
         Use `PLOT columnname1 FOR columnname [from [to [step]]] AND`
         """
@@ -104,11 +108,11 @@ class PlotMixin():
         plt.legend()
         if not dontshow:
             plt.show(block=False)
-        
+
     def plotting_scatter(self, name_x, name_y, _for = None, *for_filters):
         """
         Create a scatterplot
-        
+
         Use 'SCATTER columname1 columname2' to plot a scatterplot
         """
         fig, mainAx = plt.subplots()
@@ -150,9 +154,10 @@ class PlotMixin():
         except IndexError as e:
             raise InvalidInput("HIST requires the columnname you like to show data about.") from e
         if len(args) == 1:
-            show_hist(adv_getitem(self.filtered_data,columnname), columnname,
-                      self.filtered_data._fav_datasetname +" "+hist_to_title(self.filtered_data._fav_history),
-                      self.settings, angular)
+            show_hist([adv_getitem(self.filtered_data,columnname)], columnname,
+                      [self.filtered_data._fav_datasetname +" "+hist_to_title(self.filtered_data._fav_history)],
+                      self.settings,
+                      angular)
         elif args[1] == "FOR":
             if len(args)>2 and args[2]=="SAVED":
                 for dataname in args[3:]:
@@ -160,14 +165,22 @@ class PlotMixin():
                         raise InvalidInput("The command 'HIST columnname FOR SAVED' expect a list of saved "
                                            "datasets, but nothing was saved under the name "
                                            "'{}'.".format(dataname))
-                    show_hist(adv_getitem(self.stored[dataname],columnname), columnname, self.stored[dataname]._fav_datasetname +" "+hist_to_title(self.stored[dataname]._fav_history), 
-                              self.settings)
+                show_hist([adv_getitem(self.stored[dataname],columnname) for dataname in args[3:]],
+                          columnname,
+                          [self.stored[dataname]._fav_datasetname +" "+hist_to_title(self.stored[dataname]._fav_history) for dataname in args[3:]],
+                          self.settings,
+                          angular)
             elif len(args)>2 and args[2] in self.filtered_data.columns.values:
                 range_ = self._get_range(*args[2:])
+                datas = []
                 for r in range_:
                     data = self._filter_from_r(args[2], r)
-                    show_hist(adv_getitem(data,columnname), columnname, data._fav_datasetname +" " + hist_to_title(data._fav_history), 
-                                    self.settings)
+                    datas.append(data)
+                show_hist([adv_getitem(data,columnname) for data in datas],
+                          columnname,
+                          [data._fav_datasetname +" " + hist_to_title(data._fav_history) for data in datas],
+                          self.settings,
+                          angular)
             else:
                 raise InvalidInput("The command 'HIST columnname FOR' expect either the keyword "
                                    "'SAVED' or a vaild key that identifies one column of the data,"
@@ -199,10 +212,14 @@ class PlotMixin():
             the the value in column key falls into different regions of the range given by from, to and optionally step.
         """
         self._plotting_hist_base(False, *args)
-def bin_data(data, num_bins):
-    min_ = min(data)
-    max_ = max(data)
-    bins = np.linspace(min_, max_, num_bins+1)
+def bin_data(data, bins):
+    """
+    :param bins: Either a array of bins or an integer
+    """
+    if isinstance(bins, int):
+        min_ = min(data)
+        max_ = max(data)
+        bins = np.linspace(min_, max_, bins+1)
     groups = pd.value_counts(pd.cut(data, bins), sort=False)
     return groups.values, bins
 
@@ -254,51 +271,80 @@ def polar_twin(ax):
     ax2.get_yaxis().set_ticks([])
     return ax2
 
-def bin_angular(data, num_bins = 100):
-    bins = np.linspace(0, 2*math.pi, num_bins+1)
+def bin_angular(data, bins = 100):
+    """
+    See docstring of bin
+    """
+    if isinstance(bins, int):
+        bins = np.linspace(0, 2*math.pi, bins+1)
     groups = pd.value_counts(pd.cut(data, bins), sort=False)
     return groups.values, bins
 
 
-def show_hist(data, xlabel, histtext, settings, angular):
+def show_hist(data_list, xlabel, histtext, settings, angular):
     num_bins = settings["plotting.hist_bins"]
     max_val = settings["plotting.ylim"]
     subplot_kw = {}
     if angular:
         subplot_kw["projection"]="polar"
-    fig, mainAx = plt.subplots(subplot_kw=subplot_kw)
-    fig.suptitle(histtext)
+    kwargs = {}
+    if settings["plotting.figsize"]:
+        kwargs["figsize"]=(settings["plotting.figsize"], settings["plotting.figsize"])
+    fig, mainAx = plt.subplots(subplot_kw=subplot_kw, **kwargs)
     mainAx.set_xlabel(xlabel)
+    val_sum=None
+    all_data = np.concatenate(data_list)
 
-    if len(data):
-        if num_bins is not None:
-            if angular:
-                bin_f=bin_angular
-                mainAx.set_theta_direction(-1)
-                mainAx.set_theta_zero_location("W")
-                unit=36
-                mainAx.set_thetagrids([unit*r for r in range(6)])
-                fig.text(0.05,0.9, "{} datapoints".format(len(data)) )
-            else:
-                bin_f=bin_data
-                fig.text(0.2,0.8, "{} datapoints".format(len(data)) )
+    if angular:
+        mainAx.set_theta_direction(-1)
+        mainAx.set_theta_zero_location("W")
+        unit=9
+        mainAx.set_thetagrids([unit*r for r in range(180//unit+1)])
+        fig.text(0.05,0.9, "{} datapoints".format(len(all_data)) )
+    else:
+        fig.text(0.2,0.8, "{} datapoints".format(len(all_data)) )
+    if num_bins is None or len(data_list)==1:
+        fig.suptitle("\n".join(histtext))
+    if num_bins is not None:
+        if angular:
+            bin_f=bin_angular
+        else:
+            bin_f=bin_data
+        total_values, bins = bin_f(all_data, num_bins)
+        next_bottoms=np.zeros_like(total_values)
+        for i, data in enumerate(data_list):
+            if len(data):
+                values, _ = bin_f(data, bins)
 
-            values, bins = bin_f(data, num_bins)
-            bars = mainAx.bar(bins[:-1], values, width=bins[1]-bins[0], linewidth=0.25, align="edge")
-            mainAx.set_ylabel("count")
-        if max_val:
-            mainAx.set_ylim(0,max_val)
+                bars = mainAx.bar(bins[:-1], values, width=bins[1]-bins[0],
+                                 bottom = next_bottoms,
+                                 linewidth=0.25, align="edge", label=histtext[i])
+                next_bottoms+=values
 
-        maxc = max(values)
-        for r, bar in zip(values, bars):
-            bar.set_facecolor(plt.cm.jet(r / maxc))
+        mainAx.set_ylabel("count")
 
-        if settings["plotting.kde_kernel"] is not None:
-            if angular:
-                kde_ax = polar_twin(mainAx)
-            else:
-                kde_ax = mainAx.twinx()
-                kde_ax.set_ylabel("density")
+        if len(data_list)==1:
+            maxc = max(values)
+            for r, bar in zip(values, bars):
+                bar.set_facecolor(plt.cm.jet(r / maxc))
+
+    if angular:
+        if not max_val:
+            max_val = mainAx.get_ylim()[1]
+        mainAx.set_ylim(-max_val,max_val)
+    elif max_val:
+        mainAx.set_ylim(top=max_val)
+
+    if settings["plotting.kde_kernel"] is not None:
+        if angular:
+            kde_ax = polar_twin(mainAx)
+        else:
+            kde_ax = mainAx.twinx()
+            kde_ax.set_ylabel("density")
+        for data in data_list:
             plot_kde(data, kde_ax, settings)
-
+        if angular:
+            kde_ax.set_ylim(bottom=-kde_ax.get_ylim()[1])
+    if len(data_list)>1:
+        mainAx.legend()
     plt.show(block=False)
