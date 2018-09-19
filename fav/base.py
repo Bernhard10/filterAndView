@@ -20,7 +20,7 @@ def nunique(data):
     uni = np.unique(data)
     l = len(uni)
     return l
-    
+
 ast_operators = {ast.Add: op.add, ast.Sub: op.sub, ast.Mult: op.mul,
              ast.Div: op.truediv, ast.FloorDiv: op.floordiv, ast.Pow: op.pow, ast.BitXor: op.xor,
              ast.USub: op.neg, ast.Mod: op.mod}
@@ -92,8 +92,10 @@ def datafilter(f):
             raise InvalidInput("Cannot convert value {} to type {} of "
                                "column {}.".format(value, d_type, key)) from e
         newdata = f(data, key, value2)
-        newdata._fav_history = data._fav_history + ["{} {} {}".format(key, f.__doc__, value)]
-        newdata._fav_datasetname = data._fav_datasetname
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            newdata._fav_history = data._fav_history + ["{} {} {}".format(key, f.__doc__, value)]
+            newdata._fav_datasetname = data._fav_datasetname
         return newdata
     return wrapped
 
@@ -154,7 +156,7 @@ def unique(data, key, value):
     """unique"""
     assert value is None
     return data.drop_duplicates(subset=key)
-    
+
 def hist_to_title(history):
     if history:
         title = "<"+";".join(history)+">"
@@ -170,7 +172,7 @@ OPS = {
       "<=": le,
       ">=": ge,
       "!=": ne,
-      "contains": in_, 
+      "contains": in_,
       "doesnot_contain": notin,
       "unique": unique
       }
@@ -217,8 +219,10 @@ class DataAnalysis(object):
         :param dataset_name: Assign a name to this dataset
         :param column_metadata: None or a dict of dicts.
         """
-        data._fav_history = []
-        data._fav_datasetname = dataset_name
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            data._fav_history = []
+            data._fav_datasetname = dataset_name
         self.data={dataset_name: data}
         self.column_metadata = defaultdict(dict)
         self.column_metadata[dataset_name] = column_metadata
@@ -281,10 +285,10 @@ class DataAnalysis(object):
                     raise
             except KeyError:
                 raise UnknownCommand(parts[0])
-    
+
     def apply_unary(self, key, operator):
         self.filtered_data = apply_filter(self.filtered_data, key, operator, None)
-        
+
     def apply_filter(self, key, operator, value):
         self.filtered_data = apply_filter(self.filtered_data, key, operator, value)
 
@@ -470,8 +474,10 @@ class DataAnalysis(object):
                 elif line.startswith("#fav_colmeta"):
                     self.column_metadata[name]=json.loads(line.partition(" ")[2])
         data = pd.read_csv(os.path.expanduser(path), comment="#")
-        data._fav_history = []
-        data._fav_datasetname = self.filtered_data._fav_datasetname
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            data._fav_history = []
+            data._fav_datasetname = self.filtered_data._fav_datasetname
         self.data[name] = data
         log.info("The file contains the following stored entries: {}".format(saved_dict))
         for savename, hist in saved_dict.items():
