@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import warnings
 import math
-
+from itertools import combinations
 from matplotlib.pyplot import cm
 from sklearn.grid_search import GridSearchCV
 
@@ -165,6 +165,13 @@ class PlotMixin():
                         raise InvalidInput("The command 'HIST columnname FOR SAVED' expect a list of saved "
                                            "datasets, but nothing was saved under the name "
                                            "'{}'.".format(dataname))
+
+                for index1, index2 in combinations(
+                        [adv_getitem(self.stored[dataname],columnname).index
+                         for dataname in args[3:]], 2):
+                    if len(index1&index2)>0:
+                        raise ValueError("There are cells found in multiple saved views. "
+                                         "This can currently not be plotted correctly.")
                 show_hist([adv_getitem(self.stored[dataname],columnname) for dataname in args[3:]],
                           columnname,
                           [self.stored[dataname]._fav_datasetname +" "+hist_to_title(self.stored[dataname]._fav_history) for dataname in args[3:]],
@@ -342,7 +349,8 @@ def show_hist(data_list, xlabel, histtext, settings, angular):
             kde_ax = mainAx.twinx()
             kde_ax.set_ylabel("density")
         for data in data_list:
-            plot_kde(data, kde_ax, settings)
+            if len(data)>0:
+                plot_kde(data, kde_ax, settings)
         if angular:
             kde_ax.set_ylim(bottom=-kde_ax.get_ylim()[1])
     if len(data_list)>1:
