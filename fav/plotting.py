@@ -9,7 +9,8 @@ import warnings
 import math
 from itertools import combinations
 from matplotlib.pyplot import cm
-from sklearn.grid_search import GridSearchCV
+#from sklearn.grid_search import GridSearchCV
+from sklearn.model_selection import GridSearchCV
 
 from .configValues import CONFIG
 from .base import InvalidInput, hist_to_title, adv_getitem
